@@ -1,6 +1,7 @@
 *.dcu
 *.exe
 *.map
+*.res
 *.identcache
 *.local
 *.tvsconfig
