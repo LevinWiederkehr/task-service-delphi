@@ -49,6 +49,12 @@
         <CfgParent>Base</CfgParent>
         <Base>true</Base>
     </PropertyGroup>
+    <PropertyGroup Condition="('$(Platform)'=='Win32' and '$(Cfg_2)'=='true') or '$(Cfg_2_Win32)'!=''">
+        <Cfg_2_Win32>true</Cfg_2_Win32>
+        <CfgParent>Cfg_2</CfgParent>
+        <Cfg_2>true</Cfg_2>
+        <Base>true</Base>
+    </PropertyGroup>
     <PropertyGroup Condition="'$(Base)'!=''">
         <DCC_E>false</DCC_E>
         <DCC_F>false</DCC_F>
@@ -136,6 +142,10 @@
         <DCC_GenerateStackFrames>true</DCC_GenerateStackFrames>
         <DCC_RangeChecking>true</DCC_RangeChecking>
         <DCC_IntegerOverflowCheck>true</DCC_IntegerOverflowCheck>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(Cfg_2_Win32)'!=''">
+        <Debugger_IncludeSystemVars>true</Debugger_IncludeSystemVars>
+        <Debugger_EnvVars>PORT=8095;$(Debugger_EnvVars)</Debugger_EnvVars>
     </PropertyGroup>
     <ItemGroup>
         <DelphiCompile Include="$(MainSource)">
