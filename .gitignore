@@ -1,5 +1,9 @@
 *.dcu
 *.exe
+# Ausnahme: TaskService.exe wird bewusst mitversioniert (vorkompiliert),
+# damit Teammitglieder ohne Delphi-Installation den Service trotzdem per
+# start.cmd starten koennen - siehe README.
+!TaskService.exe
 *.map
 *.res
 *.identcache

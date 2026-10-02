@@ -31,9 +31,9 @@ Der Vertrag (Endpoints, Felder, Event-Format) liegt im separaten Repo
   beim Neustart). Ersetzen durch echte Datenbank (z.B. FireDAC + SQLite).
 - Fehlerbehandlung/Validierung verfeinern (z.B. Titel-Laenge, Pagination
   bei `GET /tasks`).
-- `.dproj`/IDE-Projektdatei existiert bewusst noch nicht - beim ersten
-  Oeffnen in der IDE (Datei `TaskService.dpr` oeffnen) legt Delphi sie
-  automatisch an.
+- Die mitgelieferte `TaskService.exe` muss nach jeder Code-Aenderung von
+  jemandem mit Delphi neu gebaut (`run.cmd`) und neu committet werden -
+  `start.cmd` baut nichts selbst, siehe Abschnitt "Starten" unten.
 
 ## Struktur
 
@@ -50,10 +50,24 @@ Voraussetzung: gemeinsame Infrastruktur laeuft (siehe
 [`../contracts/README.md`](../contracts/README.md) -
 `docker compose up --build` im `contracts`-Repo, startet Keycloak + RabbitMQ).
 
+**Falls du Delphi installiert hast** (zum Entwickeln/Aendern des Codes):
 ```
-dcc64 TaskService.dpr
-TaskService.exe
+run.cmd
 ```
+Baut den Code neu (`dcc64`) und startet danach. Optional mit anderem Port:
+`run.cmd 8095` (falls 8090 bei dir belegt ist).
+
+**Falls du KEIN Delphi installiert hast** (z.B. um den Service nur
+mitlaufen zu lassen, waehrend du am History-Service arbeitest):
+```
+start.cmd
+```
+Startet direkt die im Repo mitgelieferte, fertig kompilierte
+`TaskService.exe` - kein Delphi, kein Build noetig. Sie ist ein
+eigenstaendiges Windows-Programm (keine Delphi-Laufzeit-DLLs), laeuft also
+auf jedem Windows-Rechner. Wichtig: diese `.exe` ist ein Snapshot vom
+letzten `git push` - wenn sich am Code was aendert, muss sie neu gebaut und
+committet werden, damit `start.cmd` auch die aktuelle Version startet.
 
 Konfiguration per Umgebungsvariable (Defaults passen zur gemeinsamen Infra):
 
