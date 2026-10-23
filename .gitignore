@@ -14,3 +14,7 @@ __history/
 __recovery/
 Win32/
 Win64/
+# Lokale SQLite-Datenbank (wird beim Start automatisch angelegt)
+*.db
+*.db-wal
+*.db-shm

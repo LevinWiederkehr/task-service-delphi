@@ -1,81 +1,78 @@
 # task-service-delphi
 
 Task-Service des Task-Management-Systems - verwaltet Aufgaben pro Benutzer.
-Geschrieben in Delphi (Indy fuer HTTP-Server + TCP), **lauffaehiges
-Grundgerueest**, kein fertiges Produkt.
+Geschrieben in Delphi (Indy fuer HTTP + TCP, FireDAC/SQLite fuer Persistenz).
 
 Der Vertrag (Endpoints, Felder, Event-Format) liegt im separaten Repo
-[`contracts`](../contracts) - siehe dort `openapi/task-service.yaml` und
-`asyncapi/task-events.yaml`. Bei Aenderungen zuerst dort anpassen.
+[`contracts`](https://github.com/LevinWiederkehr/task-management-contracts) -
+siehe dort `openapi/task-service.yaml` und `asyncapi/task-events.yaml`
+(implementierte Version: **1.1.0**). Bei Aenderungen zuerst dort anpassen,
+Vorgehen siehe `EVOLUTION.md` im contracts-Repo.
 
-## Was schon funktioniert (Ende-zu-Ende getestet)
+## Funktionen
 
-- `GET /health` (oeffentlich)
-- `GET /tasks`, `POST /tasks`, `GET /tasks/{id}`, `PUT /tasks/{id}`, `DELETE /tasks/{id}`
-- Login-Pruefung per Bearer-Token (aus Keycloak) - **Achtung, siehe TODO unten**
-- Ressourcenbasierte Autorisierung: jede Aufgabe gehoert genau einem
-  Benutzer (`sub`-Claim), andere Benutzer bekommen 404 statt der Aufgabe
-- Bei jeder Aenderung (create/update/complete/delete) wird ein Event an
-  RabbitMQ published (Fanout-Exchange `task-events`, per STOMP) - verifiziert
-  per Python/pika-Consumer, dass die Events korrekt ankommen
-
-## Was noch fehlt (TODO fuer die Weiterentwicklung)
-
-- **Wichtig, sicherheitsrelevant**: `JwtAuth.pas` prueft aktuell NUR die
-  Ablaufzeit, NICHT die Signatur des Tokens. Vor echtem Einsatz: Signatur
-  (RS256) gegen die JWKS von Keycloak verifizieren - siehe Kommentar am
-  Anfang von `JwtAuth.pas` fuer Optionen (z.B. Library
-  `Delphi-JOSE-JWT`, oder Referenzimplementierung in Java aus dem
-  M321-Demo-Projekt).
-- Persistenz: `TaskModel.pas` haelt Aufgaben nur im Arbeitsspeicher (weg
-  beim Neustart). Ersetzen durch echte Datenbank (z.B. FireDAC + SQLite).
-- Fehlerbehandlung/Validierung verfeinern (z.B. Titel-Laenge, Pagination
-  bei `GET /tasks`).
-- Die mitgelieferte `TaskService.exe` muss nach jeder Code-Aenderung von
-  jemandem mit Delphi neu gebaut (`run.cmd`) und neu committet werden -
-  `start.cmd` baut nichts selbst, siehe Abschnitt "Starten" unten.
+- `GET /health` (oeffentlich, prueft auch die DB, zeigt `pendingEvents`)
+- `GET|POST /v1/tasks`, `GET|PUT|DELETE /v1/tasks/{id}`
+- `/tasks...` ohne Version: **deprecated** Alias aus Vertrag 1.0.0, Antwort
+  mit Header `Deprecation: true` (Expand-Phase, siehe EVOLUTION.md)
+- **Authentifizierung**: Bearer-Token von Keycloak, **Signatur wird geprueft**
+  (RS256 gegen die JWKS des Realms, per Windows CNG/`bcrypt.dll`), dazu
+  Issuer und Ablaufzeit. `alg: none` oder manipulierte Tokens -> 401.
+- **Autorisierung**: ressourcenbasiert - jede Aufgabe gehoert genau einem
+  Benutzer (`sub`-Claim), andere Benutzer bekommen 404
+- **Persistenz**: SQLite (`tasks.db`, statisch gelinkt, keine DLL noetig)
+- **Transactional Outbox**: jede Aenderung schreibt in derselben Transaktion
+  ein Event in die Tabelle `outbox`. Ein Hintergrund-Thread versendet es per
+  STOMP an RabbitMQ, wartet auf die Broker-Bestaetigung (`RECEIPT`) und
+  versucht es bei Fehlern mit exponentiellem Backoff (1-30 s) erneut.
+  -> Ein Broker-Ausfall verzoegert nur die Events, **nie** einen
+  HTTP-Request, und es geht kein Event verloren (at-least-once).
+- **Observability**: Header `X-Correlation-ID` wird uebernommen (oder neu
+  erzeugt), in der Response zurueckgegeben, in jedem Log-Eintrag und im
+  Event (`correlationId` + AMQP-Property `correlation_id`) mitgegeben. Logs
+  sind JSON-Zeilen (CLEF), optional zentral an Seq (`SEQ_URL`).
+- Validierung: `title` 1-200 Zeichen, `description` max. 2000 Zeichen
+- Sauberes Herunterfahren bei Ctrl+C (Server stoppen, Outbox-Thread beenden)
 
 ## Struktur
 
 | Datei | Zweck |
 | --- | --- |
-| `TaskService.dpr` | Hauptprogramm: HTTP-Server (Indy `TIdHTTPServer`), Routing |
-| `TaskModel.pas` | Datenmodell + Thread-sicherer In-Memory-Store |
-| `JwtAuth.pas` | Access-Token pruefen (Bearer) - **TODO Signaturpruefung, s.o.** |
-| `TaskEventPublisher.pas` | Published Events per STOMP an RabbitMQ (Fanout) |
+| `TaskService.dpr` | Hauptprogramm: HTTP-Server, Routing, Request-Kontext (Correlation-ID, Logging) |
+| `TaskModel.pas` | Domaenenmodell + Abbildung auf API-DTO und Event (Vertrags-Mapping) |
+| `TaskStore.pas` | SQLite-Persistenz + Transactional Outbox |
+| `OutboxPublisher.pas` | Hintergrund-Thread: Outbox -> RabbitMQ (STOMP, Receipt, Retry) |
+| `JwtAuth.pas` | Token-Pruefung inkl. RS256-Signatur gegen JWKS |
+| `AppLog.pas` | Strukturiertes JSON-Logging, optional Versand an Seq |
 
 ## Starten
 
-Voraussetzung: gemeinsame Infrastruktur laeuft (siehe
-[`../contracts/README.md`](../contracts/README.md) -
-`docker compose up --build` im `contracts`-Repo, startet Keycloak + RabbitMQ).
+Voraussetzung: gemeinsame Infrastruktur laeuft (`contracts`-Repo). Am
+einfachsten startet man das **ganze System** mit `start-all.ps1` im
+contracts-Repo. Nur diesen Service:
 
-**Falls du Delphi installiert hast** (zum Entwickeln/Aendern des Codes):
 ```
-run.cmd
+start.cmd          (ohne Delphi: startet die mitgelieferte TaskService.exe)
+run.cmd            (mit Delphi: baut neu per dcc64 und startet)
 ```
-Baut den Code neu (`dcc64`) und startet danach. Optional mit anderem Port:
-`run.cmd 8095` (falls 8090 bei dir belegt ist).
 
-**Falls du KEIN Delphi installiert hast** (z.B. um den Service nur
-mitlaufen zu lassen, waehrend du am History-Service arbeitest):
-```
-start.cmd
-```
-Startet direkt die im Repo mitgelieferte, fertig kompilierte
-`TaskService.exe` - kein Delphi, kein Build noetig. Sie ist ein
-eigenstaendiges Windows-Programm (keine Delphi-Laufzeit-DLLs), laeuft also
-auf jedem Windows-Rechner. Wichtig: diese `.exe` ist ein Snapshot vom
-letzten `git push` - wenn sich am Code was aendert, muss sie neu gebaut und
-committet werden, damit `start.cmd` auch die aktuelle Version startet.
+Ohne Port-Angabe wird 8090 verwendet; ist 8090 belegt (z.B. durch
+Wondershare NativePush), automatisch 8095. Fester Port: `start.cmd 8095`.
+
+Die mitgelieferte `TaskService.exe` ist ein Snapshot - nach Code-Aenderungen
+mit `run.cmd` neu bauen und committen.
 
 Konfiguration per Umgebungsvariable (Defaults passen zur gemeinsamen Infra):
 
 | Variable | Default |
 | --- | --- |
 | `PORT` | `8090` |
-| `RABBITMQ_HOST` | `localhost` |
-| `RABBITMQ_STOMP_PORT` | `61613` |
+| `DB_PATH` | `tasks.db` neben der .exe |
+| `RABBITMQ_HOST` / `RABBITMQ_STOMP_PORT` | `localhost` / `61613` |
+| `RABBITMQ_USER` / `RABBITMQ_PASS` | `guest` / `guest` |
+| `OIDC_JWKS_URL` | `http://localhost:8082/realms/task-mgmt/protocol/openid-connect/certs` |
+| `OIDC_ISSUER` | `http://localhost:8082/realms/task-mgmt` |
+| `SEQ_URL` | leer (kein Versand); im Gesamtsystem `http://localhost:5341` |
 
 ## Manuell testen
 
@@ -86,6 +83,20 @@ curl -X POST http://localhost:8082/realms/task-mgmt/protocol/openid-connect/toke
   -d "grant_type=password&client_id=task-mgmt-client&username=levin&password=levin123"
 
 # Aufgabe anlegen (access_token aus der Antwort oben einsetzen)
-curl -X POST http://localhost:8090/tasks -H "Authorization: Bearer <token>" ^
+curl -i -X POST http://localhost:8090/v1/tasks -H "Authorization: Bearer <token>" ^
+  -H "X-Correlation-ID: demo-123" ^
   -H "Content-Type: application/json" -d "{\"title\":\"Rechnung schreiben\"}"
 ```
+
+Automatisierter End-to-End-Test des Gesamtsystems: `scripts/e2e-test.ps1`
+im contracts-Repo.
+
+## Bekannte Grenzen
+
+- Der Service ist (wegen SQLite) **eine** Instanz; horizontal skaliert wird
+  der History-Service. Fuer mehrere Task-Service-Instanzen muesste die DB
+  auf einen Server (z.B. Postgres) wechseln - der Code ist dafuer bereits
+  zustandslos (keine Daten im Speicher, IDs aus der DB).
+- `bcrypt.dll` ist Windows-only. Ein Linux-Build (fuer einen Linux-Container)
+  braeuchte den Delphi-Linux-Compiler und eine OpenSSL-Variante von
+  `VerifyRs256` in `JwtAuth.pas`.

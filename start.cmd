@@ -2,16 +2,16 @@
 rem Startet den Task-Service OHNE zu bauen - fuer alle, die KEIN Delphi
 rem installiert haben. TaskService.exe ist bereits fertig kompiliert im Repo
 rem enthalten und laeuft als eigenstaendiges Windows-Programm (keine
-rem Delphi-Laufzeit/DLLs noetig, nur normale Windows-System-DLLs).
+rem Delphi-Laufzeit/DLLs noetig, SQLite ist statisch eingebunden).
 rem
-rem Optional: start.cmd <Port>  (Default: 8090)
+rem Optional: start.cmd <Port>. Ohne Angabe wird 8090 verwendet - ist 8090
+rem belegt (z.B. durch Wondershare NativePush), automatisch 8095.
 rem
 rem Wichtig: wenn sich am Delphi-Quellcode etwas aendert, muss jemand mit
 rem Delphi (per run.cmd) neu bauen und die neue TaskService.exe committen -
 rem start.cmd baut nichts, es startet nur, was schon da ist.
 setlocal
-set "PORT=%~1"
-if "%PORT%"=="" set "PORT=8090"
+call "%~dp0choose-port.cmd" %1 || exit /b 1
 
 if not exist "%~dp0TaskService.exe" (
   echo FEHLER: TaskService.exe wurde nicht gefunden. "git pull" ausfuehren,

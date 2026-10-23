@@ -1,4 +1,4 @@
-﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
     <PropertyGroup>
         <ProjectGuid>{47595B2D-ECD4-4C76-849B-19A3DFF0799B}</ProjectGuid>
         <MainSource>TaskService.dpr</MainSource>
@@ -151,9 +151,11 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
+        <DCCReference Include="AppLog.pas"/>
         <DCCReference Include="TaskModel.pas"/>
+        <DCCReference Include="TaskStore.pas"/>
+        <DCCReference Include="OutboxPublisher.pas"/>
         <DCCReference Include="JwtAuth.pas"/>
-        <DCCReference Include="TaskEventPublisher.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

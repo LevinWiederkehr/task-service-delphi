@@ -1,55 +1,57 @@
 unit TaskModel;
 
-{ Datenmodell + In-Memory-Speicher fuer Aufgaben. Bewusst als einfachste
-  moegliche Persistenz gehalten (TODO fuer die Weiterentwicklung: durch eine
-  echte Datenbank ersetzen, z.B. FireDAC + SQLite). Der Store ist
-  Thread-sicher (TCriticalSection), weil Indys HTTP-Server Requests parallel
-  auf mehreren Threads verarbeitet. }
+{ Domaenenmodell des Task-Service und die Abbildung auf die externen
+  Vertraege. Bewusst getrennt:
+    - TTask             : internes Domaenenobjekt (Record, Wertsemantik - wird
+                          beim Lesen aus der DB kopiert, keine geteilten
+                          Referenzen zwischen Threads)
+    - TaskToApiJson     : DTO gemaess contracts/openapi/task-service.yaml
+    - BuildTaskEventJson: Event gemaess contracts/asyncapi/task-events.yaml
+  Aendert sich ein Vertrag, wird nur die jeweilige Abbildung angepasst, nicht
+  das Domaenenmodell. }
 
 interface
 
 uses
   System.SysUtils,
-  System.Generics.Collections,
-  System.SyncObjs;
+  System.JSON;
+
+const
+  ContractVersion = '1.1.0';
+  EventSchemaVersion = 1;
+  MaxTitleLength = 200;
+  MaxDescriptionLength = 2000;
 
 type
   TTaskStatus = (tsOpen, tsDone);
+  TTaskEventType = (etCreated, etUpdated, etCompleted, etDeleted);
 
-  TTask = class
-  public
+  TTask = record
     Id: string;
     OwnerUserId: string;
     Title: string;
     Description: string;
     Status: TTaskStatus;
-    CreatedAt: TDateTime;
-    UpdatedAt: TDateTime;
-  end;
-
-  { Liefert einen Task per Referenz/Klon - Aufrufer duerfen die Liste nicht
-    behalten, sie ist nur fuer die Dauer des Requests gueltig. }
-  TTaskStore = class
-  private
-    FLock: TCriticalSection;
-    FTasks: TObjectList<TTask>;
-    FNextId: Int64;
-  public
-    constructor Create;
-    destructor Destroy; override;
-
-    function Add(const AOwnerUserId, ATitle, ADescription: string): TTask;
-    function ListByOwner(const AOwnerUserId: string): TArray<TTask>;
-    function FindByIdAndOwner(const AId, AOwnerUserId: string): TTask;
-    function Update(const AId, AOwnerUserId: string; const ATitle, ADescription: string;
-      AHasTitle, AHasDescription: Boolean; AStatus: TTaskStatus; AHasStatus: Boolean): TTask;
-    function Delete(const AId, AOwnerUserId: string): Boolean;
+    CreatedAt: TDateTime; // UTC
+    UpdatedAt: TDateTime; // UTC
   end;
 
 function StatusToString(AStatus: TTaskStatus): string;
 function StringToStatus(const AValue: string; out AStatus: TTaskStatus): Boolean;
+function EventTypeToString(AEventType: TTaskEventType): string;
+
+function TaskToApiJson(const ATask: TTask): TJSONObject;
+
+{ Baut das Event als JSON-Text. AEventStatus erlaubt 'DELETED' (nur im Event). }
+function BuildTaskEventJson(const AEventId: string; AEventType: TTaskEventType; const ATask: TTask;
+  const AEventStatus, ACorrelationId: string; AOccurredAt: TDateTime): string;
+
+function NewUuid: string;
 
 implementation
+
+uses
+  System.DateUtils;
 
 function StatusToString(AStatus: TTaskStatus): string;
 begin
@@ -71,114 +73,55 @@ begin
     Result := False;
 end;
 
-{ TTaskStore }
-
-constructor TTaskStore.Create;
+function EventTypeToString(AEventType: TTaskEventType): string;
 begin
-  inherited Create;
-  FLock := TCriticalSection.Create;
-  FTasks := TObjectList<TTask>.Create(True);
-  FNextId := 0;
-end;
-
-destructor TTaskStore.Destroy;
-begin
-  FTasks.Free;
-  FLock.Free;
-  inherited Destroy;
-end;
-
-function TTaskStore.Add(const AOwnerUserId, ATitle, ADescription: string): TTask;
-begin
-  FLock.Enter;
-  try
-    Inc(FNextId);
-    Result := TTask.Create;
-    Result.Id := IntToStr(FNextId);
-    Result.OwnerUserId := AOwnerUserId;
-    Result.Title := ATitle;
-    Result.Description := ADescription;
-    Result.Status := tsOpen;
-    Result.CreatedAt := Now;
-    Result.UpdatedAt := Result.CreatedAt;
-    FTasks.Add(Result);
-  finally
-    FLock.Leave;
+  case AEventType of
+    etCreated: Result := 'TASK_CREATED';
+    etCompleted: Result := 'TASK_COMPLETED';
+    etDeleted: Result := 'TASK_DELETED';
+  else
+    Result := 'TASK_UPDATED';
   end;
 end;
 
-function TTaskStore.ListByOwner(const AOwnerUserId: string): TArray<TTask>;
+function TaskToApiJson(const ATask: TTask): TJSONObject;
+begin
+  Result := TJSONObject.Create;
+  Result.AddPair('id', ATask.Id);
+  Result.AddPair('ownerUserId', ATask.OwnerUserId);
+  Result.AddPair('title', ATask.Title);
+  Result.AddPair('description', ATask.Description);
+  Result.AddPair('status', StatusToString(ATask.Status));
+  Result.AddPair('createdAt', DateToISO8601(ATask.CreatedAt, True));
+  Result.AddPair('updatedAt', DateToISO8601(ATask.UpdatedAt, True));
+end;
+
+function BuildTaskEventJson(const AEventId: string; AEventType: TTaskEventType; const ATask: TTask;
+  const AEventStatus, ACorrelationId: string; AOccurredAt: TDateTime): string;
 var
-  Matches: TList<TTask>;
-  Item: TTask;
+  Body: TJSONObject;
 begin
-  FLock.Enter;
+  Body := TJSONObject.Create;
   try
-    Matches := TList<TTask>.Create;
-    try
-      for Item in FTasks do
-        if Item.OwnerUserId = AOwnerUserId then
-          Matches.Add(Item);
-      Result := Matches.ToArray;
-    finally
-      Matches.Free;
-    end;
+    Body.AddPair('eventId', AEventId);
+    Body.AddPair('schemaVersion', TJSONNumber.Create(EventSchemaVersion));
+    Body.AddPair('eventType', EventTypeToString(AEventType));
+    Body.AddPair('taskId', ATask.Id);
+    Body.AddPair('ownerUserId', ATask.OwnerUserId);
+    Body.AddPair('title', ATask.Title);
+    Body.AddPair('status', AEventStatus);
+    Body.AddPair('occurredAt', DateToISO8601(AOccurredAt, True));
+    if ACorrelationId <> '' then
+      Body.AddPair('correlationId', ACorrelationId);
+    Result := Body.ToJSON;
   finally
-    FLock.Leave;
+    Body.Free;
   end;
 end;
 
-function TTaskStore.FindByIdAndOwner(const AId, AOwnerUserId: string): TTask;
-var
-  Item: TTask;
+function NewUuid: string;
 begin
-  Result := nil;
-  FLock.Enter;
-  try
-    for Item in FTasks do
-      if (Item.Id = AId) and (Item.OwnerUserId = AOwnerUserId) then
-      begin
-        Result := Item;
-        Break;
-      end;
-  finally
-    FLock.Leave;
-  end;
-end;
-
-function TTaskStore.Update(const AId, AOwnerUserId: string; const ATitle, ADescription: string;
-  AHasTitle, AHasDescription: Boolean; AStatus: TTaskStatus; AHasStatus: Boolean): TTask;
-begin
-  FLock.Enter;
-  try
-    Result := FindByIdAndOwner(AId, AOwnerUserId);
-    if Result = nil then
-      Exit;
-    if AHasTitle then
-      Result.Title := ATitle;
-    if AHasDescription then
-      Result.Description := ADescription;
-    if AHasStatus then
-      Result.Status := AStatus;
-    Result.UpdatedAt := Now;
-  finally
-    FLock.Leave;
-  end;
-end;
-
-function TTaskStore.Delete(const AId, AOwnerUserId: string): Boolean;
-var
-  Item: TTask;
-begin
-  FLock.Enter;
-  try
-    Item := FindByIdAndOwner(AId, AOwnerUserId);
-    Result := Item <> nil;
-    if Result then
-      FTasks.Remove(Item);
-  finally
-    FLock.Leave;
-  end;
+  Result := TGUID.NewGuid.ToString.Replace('{', '').Replace('}', '').ToLower;
 end;
 
 end.
